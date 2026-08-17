@@ -36,6 +36,15 @@ maximum generation tokens, temperature, inference timeout, maximum audio
 duration, upload limit, queue length, debug retention path, bind address, and
 port. Choose CUDA/BF16 only after inspecting the server hardware.
 
+### Apple Silicon Development Profile
+
+The development host is a 16 GB Apple M1 Mac running macOS. For direct Gemma
+audio integration, configure MPS, FP16, `metal-8bit` quantization, a single
+inference worker, and no waiting queue. Metal quantization is selected over
+bitsandbytes because it is designed for Apple MPS. It uses the official Gemma
+checkpoint and Transformers' Metal kernels; the model must still fit completely
+within unified memory.
+
 ## Hardware-Free Verification
 
 Set `MIND_RUNTIME=stub` to load the deterministic in-process runner instead of

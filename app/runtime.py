@@ -69,6 +69,18 @@ class GemmaRunner(InferenceRunner):
         if dtype is None:
             raise RuntimeError("MIND_PRECISION must be bfloat16, float16, or float32.")
         load_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+        if self.settings.device == "mps" and not torch.backends.mps.is_available():
+            raise RuntimeError("MPS is not available in this PyTorch installation.")
+        if self.settings.quantization == "metal-8bit":
+            if self.settings.device != "mps":
+                raise RuntimeError("MIND_QUANTIZATION=metal-8bit requires MIND_DEVICE=mps.")
+            try:
+                from transformers import MetalConfig
+            except ImportError as error:
+                raise RuntimeError(
+                    "Metal 8-bit quantization requires a current Transformers release with MetalConfig."
+                ) from error
+            load_kwargs["quantization_config"] = MetalConfig(bits=8, group_size=64)
         if self.settings.device == "auto":
             load_kwargs["device_map"] = "auto"
         else:

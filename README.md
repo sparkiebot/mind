@@ -25,6 +25,30 @@ server, then install the production extra:
 .venv/bin/pip install -e '.[gemma]'
 ```
 
+## Apple Silicon development setup
+
+The current development machine is a 16 GB M1 Mac. Use it for compatibility,
+audio-path, and latency experiments with one request at a time; do not treat it
+as a proven production capacity target. The Metal 8-bit path keeps the official
+Gemma checkpoint and quantizes eligible weights on the MPS device.
+
+```bash
+.venv/bin/python -m app.preflight
+MIND_RUNTIME=gemma \
+MIND_DEVICE=mps \
+MIND_PRECISION=float16 \
+MIND_QUANTIZATION=metal-8bit \
+MIND_QUEUE_LENGTH=0 \
+PYTORCH_ENABLE_MPS_FALLBACK=1 \
+.venv/bin/python -m app.smoke_test /absolute/path/to/italian-request.wav
+```
+
+The first run downloads the official model, Metal kernels, and creates the
+quantized representation. Keep sufficient free disk space and close memory
+heavy applications. `PYTORCH_ENABLE_MPS_FALLBACK=1` makes unsupported MPS
+operations run on CPU rather than fail; measure latency carefully when it is
+needed.
+
 ## Run without a robot or model
 
 The stub is deterministic and performs the same multipart, WAV, schema, and

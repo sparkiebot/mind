@@ -29,6 +29,7 @@ class Settings:
     model_id: str = "google/gemma-3n-E2B-it"
     device: str = "auto"
     precision: str = "bfloat16"
+    quantization: str = "none"
     bind_host: str = "127.0.0.1"
     port: int = 8088
     max_generated_tokens: int = 256
@@ -47,11 +48,15 @@ class Settings:
         runtime = os.getenv("MIND_RUNTIME", defaults.runtime).lower()
         if runtime not in {"gemma", "stub"}:
             raise ValueError("MIND_RUNTIME must be either 'gemma' or 'stub'")
+        quantization = os.getenv("MIND_QUANTIZATION", defaults.quantization).lower()
+        if quantization not in {"none", "metal-8bit"}:
+            raise ValueError("MIND_QUANTIZATION must be either 'none' or 'metal-8bit'")
         return cls(
             runtime=runtime,
             model_id=os.getenv("MIND_MODEL_ID", defaults.model_id),
             device=os.getenv("MIND_DEVICE", defaults.device),
             precision=os.getenv("MIND_PRECISION", defaults.precision),
+            quantization=quantization,
             bind_host=os.getenv("MIND_BIND_HOST", defaults.bind_host),
             port=_integer("MIND_PORT", defaults.port, 1),
             max_generated_tokens=_integer("MIND_MAX_GENERATED_TOKENS", defaults.max_generated_tokens, 1),
