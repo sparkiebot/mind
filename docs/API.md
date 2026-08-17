@@ -42,3 +42,8 @@ Errors use:
 
 The server independently validates model output and tool proposals before
 returning a response.
+
+Common errors are `invalid_audio` (400), `invalid_request` (413/422), `busy`
+(429), `service_not_ready` (503), `inference_timeout` (504), and
+`invalid_model_output` (502). Every application error includes the supplied
+request ID when it was successfully parsed.

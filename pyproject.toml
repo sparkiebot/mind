@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sparkie-mind"
+version = "0.1.0"
+description = "Private-LAN Gemma 3n voice inference service for Sparkie"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pydantic>=2.7,<3",
+  "python-dotenv>=1.0,<2",
+  "python-multipart>=0.0.9,<1",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+gemma = [
+  "numpy>=1.26,<3",
+  "scipy>=1.12,<2",
+  "soundfile>=0.12,<1",
+  "torch>=2.4",
+  "transformers>=4.53.0",
+]
+test = [
+  "httpx>=0.27,<1",
+  "pytest>=8,<9",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

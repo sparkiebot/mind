@@ -35,3 +35,11 @@ At implementation time, configure at minimum: model ID/path, device, precision,
 maximum generation tokens, temperature, inference timeout, maximum audio
 duration, upload limit, queue length, debug retention path, bind address, and
 port. Choose CUDA/BF16 only after inspecting the server hardware.
+
+## Hardware-Free Verification
+
+Set `MIND_RUNTIME=stub` to load the deterministic in-process runner instead of
+Gemma. The stub accepts the same multipart request, performs the same WAV,
+queue, and response-schema handling, and returns a fixed Italian speech
+response. The test suite generates a short PCM WAV in memory, so no robot,
+microphone, model weights, or GPU is needed for API verification.

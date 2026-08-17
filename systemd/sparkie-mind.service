@@ -1,0 +1,21 @@
+[Unit]
+Description=Sparkie Mind LAN voice inference service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sparkie-mind
+Group=sparkie-mind
+WorkingDirectory=/opt/sparkie-mind
+EnvironmentFile=/etc/sparkie-mind/environment
+ExecStart=/opt/sparkie-mind/.venv/bin/python -m app
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sparkie-mind
+
+[Install]
+WantedBy=multi-user.target
