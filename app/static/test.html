@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sparkie Mind Audio Test</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #101518; color: #edf4f2; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: radial-gradient(circle at top, #203c39, #101518 55%); }
+    main { width: min(680px, calc(100% - 32px)); margin: 32px 0; padding: 28px; border: 1px solid #38514c; border-radius: 20px; background: #17201e; box-shadow: 0 18px 60px #0008; }
+    h1 { margin: 0; font-size: 1.65rem; } p { color: #bdcbc7; line-height: 1.5; } label { display: grid; gap: 6px; margin-top: 14px; color: #dbe9e4; font-size: .9rem; }
+    input, textarea { box-sizing: border-box; width: 100%; border: 1px solid #49615b; border-radius: 9px; padding: 10px; color: inherit; background: #101816; font: inherit; }
+    textarea { min-height: 58px; resize: vertical; } .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    button { border: 0; border-radius: 10px; padding: 11px 16px; color: #07201b; background: #79dfba; font: 700 .95rem inherit; cursor: pointer; } button.secondary { color: #e5f2ee; background: #344540; } button:disabled { cursor: not-allowed; opacity: .45; }
+    #status { min-height: 24px; margin: 18px 0 0; color: #9dd9c4; } #status.error { color: #ffaaa5; } audio { width: 100%; margin-top: 12px; } pre { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 40px; padding: 14px; border-radius: 10px; background: #0d1311; color: #cde2da; }
+    .hint { font-size: .82rem; color: #91a7a0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Sparkie Mind audio test</h1>
+    <p>Record a short request for Sparkie, listen back, then send it through the same API used by the robot.</p>
+
+    <label>Robot ID<input id="robotId" value="sparkie-browser-test" maxlength="128"></label>
+    <label>Context JSON<textarea id="context">{}</textarea></label>
+    <label>Available tools JSON<textarea id="tools">[]</textarea></label>
+
+    <div class="actions">
+      <button id="record">Start recording</button>
+      <button id="stop" class="secondary" disabled>Stop</button>
+      <button id="send" disabled>Send to Sparkie Mind</button>
+    </div>
+    <p id="status" aria-live="polite">Ready to record.</p>
+    <audio id="preview" controls hidden></audio>
+    <p class="hint">The recording is converted to PCM WAV in this browser. It is not retained by this page.</p>
+    <pre id="response" aria-live="polite">No response yet.</pre>
+  </main>
+
+  <script>
+    const recordButton = document.querySelector('#record');
+    const stopButton = document.querySelector('#stop');
+    const sendButton = document.querySelector('#send');
+    const status = document.querySelector('#status');
+    const preview = document.querySelector('#preview');
+    const response = document.querySelector('#response');
+    let recording = null;
+    let wavBlob = null;
+
+    function setStatus(message, error = false) {
+      status.textContent = message;
+      status.classList.toggle('error', error);
+    }
+
+    function encodeWav(chunks, sampleRate) {
+      const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
+      const buffer = new ArrayBuffer(44 + length * 2);
+      const view = new DataView(buffer);
+      const write = (offset, text) => [...text].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+      write(0, 'RIFF'); view.setUint32(4, 36 + length * 2, true); write(8, 'WAVE'); write(12, 'fmt ');
+      view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+      write(36, 'data'); view.setUint32(40, length * 2, true);
+      let offset = 44;
+      for (const chunk of chunks) for (const sample of chunk) {
+        const clipped = Math.max(-1, Math.min(1, sample));
+        view.setInt16(offset, clipped < 0 ? clipped * 0x8000 : clipped * 0x7fff, true);
+        offset += 2;
+      }
+      return new Blob([buffer], { type: 'audio/wav' });
+    }
+
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 }, video: false });
+        const context = new AudioContext();
+        const source = context.createMediaStreamSource(stream);
+        const processor = context.createScriptProcessor(4096, 1, 1);
+        const silentOutput = context.createGain();
+        const chunks = [];
+        silentOutput.gain.value = 0;
+        processor.onaudioprocess = event => chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+        source.connect(processor); processor.connect(silentOutput); silentOutput.connect(context.destination);
+        recording = { stream, context, source, processor, silentOutput, chunks, startedAt: performance.now() };
+        wavBlob = null; preview.hidden = true; sendButton.disabled = true;
+        recordButton.disabled = true; stopButton.disabled = false;
+        setStatus('Recording…');
+      } catch (error) {
+        setStatus(`Microphone access failed: ${error.message}`, true);
+      }
+    }
+
+    async function stopRecording() {
+      if (!recording) return;
+      const { stream, context, source, processor, silentOutput, chunks, startedAt } = recording;
+      source.disconnect(); processor.disconnect(); silentOutput.disconnect(); stream.getTracks().forEach(track => track.stop());
+      await context.close();
+      recording = null;
+      wavBlob = encodeWav(chunks, context.sampleRate);
+      preview.src = URL.createObjectURL(wavBlob); preview.hidden = false;
+      recordButton.disabled = false; stopButton.disabled = true; sendButton.disabled = false;
+      setStatus(`Recorded ${((performance.now() - startedAt) / 1000).toFixed(1)} seconds.`);
+    }
+
+    async function sendRecording() {
+      if (!wavBlob) return;
+      let context; let tools;
+      try { context = JSON.parse(document.querySelector('#context').value); tools = JSON.parse(document.querySelector('#tools').value); }
+      catch (_) { setStatus('Context and available tools must contain valid JSON.', true); return; }
+      const form = new FormData();
+      form.append('audio', wavBlob, 'sparkie-browser-request.wav');
+      form.append('request_id', crypto.randomUUID());
+      form.append('robot_id', document.querySelector('#robotId').value);
+      form.append('language', 'it');
+      form.append('timestamp', new Date().toISOString());
+      form.append('context', JSON.stringify(context));
+      form.append('available_tools', JSON.stringify(tools));
+      sendButton.disabled = true; response.textContent = 'Sending…'; setStatus('Waiting for Sparkie Mind…');
+      try {
+        const result = await fetch('/v1/voice-requests', { method: 'POST', body: form });
+        const payload = await result.json();
+        response.textContent = JSON.stringify(payload, null, 2);
+        setStatus(result.ok ? 'Response received.' : `Request failed with HTTP ${result.status}.`, !result.ok);
+      } catch (error) {
+        response.textContent = String(error);
+        setStatus(`Network request failed: ${error.message}`, true);
+      } finally { sendButton.disabled = false; }
+    }
+
+    recordButton.addEventListener('click', startRecording);
+    stopButton.addEventListener('click', stopRecording);
+    sendButton.addEventListener('click', sendRecording);
+  </script>
+</body>
+</html>

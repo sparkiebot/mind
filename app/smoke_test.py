@@ -18,8 +18,8 @@ def main() -> None:
     parser.add_argument("audio", type=Path, help="Path to a PCM WAV file")
     arguments = parser.parse_args()
     settings = Settings.from_environment()
-    if settings.runtime != "gemma":
-        raise SystemExit("Set MIND_RUNTIME=gemma before running the Gemma smoke test.")
+    if settings.runtime != "llama-server":
+        raise SystemExit("Set MIND_RUNTIME=llama-server before running the smoke test.")
     content = arguments.audio.read_bytes()
     wav = validate_wav(content, "audio/wav", settings.max_audio_duration_seconds)
     request_id = uuid4()
@@ -29,7 +29,7 @@ def main() -> None:
         runner.generate(wav, str(request_id), "it", {}, [])
     )
     if response.request_id != request_id:
-        raise SystemExit("Gemma returned a response for a different request ID.")
+        raise SystemExit("llama-server returned a response for a different request ID.")
     print(json.dumps(response.model_dump(mode="json"), ensure_ascii=False, indent=2))
 
 

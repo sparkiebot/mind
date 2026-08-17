@@ -1,23 +1,55 @@
-"""Inference backends. The stub is for tests only; Gemma receives audio directly."""
+"""Inference backends. The stub is for tests; llama.cpp receives audio directly."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from io import BytesIO
+import base64
 import json
-import math
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .audio import WavAudio
 from .settings import Settings
 
 
-SYSTEM_PROMPT = """You are the reasoning component of the Sparkie robot. User input arrives as Italian audio.
-Infer the user's intent directly from the audio. Answer concisely and naturally in Italian unless the user asks
-for another language. Never claim a physical action succeeded before receiving execution feedback. You may call
-only tools explicitly supplied in this request, and must not invent tool names or parameters. Ask for clarification
-when a command is ambiguous or unsafe. Physical actions require stricter validation. Return only valid JSON matching
-this schema: {request_id: string UUID, type: 'speech' or 'tool_call', response_text: string, tool_calls: [{name: string, arguments: object}]}."""
+SYSTEM_PROMPT = """You are Sparkie, a helpful voice assistant robot speaking directly with the user.
+The attached audio is the user's turn. Understand its meaning and respond to the user; do not transcribe, quote, or
+repeat the audio unless the user explicitly asks for a transcription. Respond in natural Italian unless the user
+clearly requests another language. Be concise: normally use one short sentence and never use more than two short
+sentences unless the user explicitly asks for an explanation or detail. Do not add greetings, filler, or a recap.
+
+Never state or imply that a physical action has completed. When an action is requested, emit only a tool call that is
+present in the supplied tool list and use response_text only to briefly acknowledge or clarify it. Never invent tool
+names, arguments, observations, or execution results. Ask a short clarification question when the request is
+ambiguous, unsafe, or cannot be fulfilled with the supplied tools.
+
+Return only valid JSON matching this schema: {request_id: string UUID, type: 'speech' or 'tool_call', response_text:
+string, tool_calls: [{name: string, arguments: object}]}. A speech response must have an empty tool_calls list. A
+tool_call response must contain at least one permitted tool call."""
+
+VOICE_RESPONSE_JSON_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["request_id", "type", "response_text", "tool_calls"],
+    "properties": {
+        "request_id": {"type": "string"},
+        "type": {"type": "string", "enum": ["speech", "tool_call"]},
+        "response_text": {"type": "string"},
+        "tool_calls": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "arguments"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "arguments": {"type": "object", "additionalProperties": True},
+                },
+            },
+        },
+    },
+}
 
 
 class InferenceRunner(ABC):
@@ -51,103 +83,89 @@ class StubRunner(InferenceRunner):
         )
 
 
-class GemmaRunner(InferenceRunner):
+def request_instruction(request_id: str, language: str, context: dict[str, Any], tools: list[dict[str, Any]]) -> str:
+    return "\n".join(
+        [
+            f"Request ID: {request_id}",
+            f"Language hint: {language}",
+            f"Robot context: {json.dumps(context, ensure_ascii=False)}",
+            f"Available tools: {json.dumps(tools, ensure_ascii=False)}",
+            "Use the attached audio as the user's request and return the required JSON only.",
+        ]
+    )
+
+
+class LlamaServerRunner(InferenceRunner):
+    """Adapter for a separately managed local llama.cpp multimodal server."""
+
+    device = "llama-server"
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.device = settings.device
-        self.model: Any = None
-        self.processor: Any = None
-        self.torch: Any = None
 
     def load(self) -> None:
+        request = Request(f"{self.settings.llama_server_url}/health", method="GET")
         try:
-            import torch
-            from transformers import AutoProcessor, Gemma3nForConditionalGeneration
-        except ImportError as error:
-            raise RuntimeError("Install the gemma extra before using MIND_RUNTIME=gemma.") from error
-        dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}.get(self.settings.precision)
-        if dtype is None:
-            raise RuntimeError("MIND_PRECISION must be bfloat16, float16, or float32.")
-        load_kwargs: dict[str, Any] = {"torch_dtype": dtype}
-        if self.settings.device == "mps" and not torch.backends.mps.is_available():
-            raise RuntimeError("MPS is not available in this PyTorch installation.")
-        if self.settings.quantization == "metal-8bit":
-            if self.settings.device != "mps":
-                raise RuntimeError("MIND_QUANTIZATION=metal-8bit requires MIND_DEVICE=mps.")
-            try:
-                from transformers import MetalConfig
-            except ImportError as error:
-                raise RuntimeError(
-                    "Metal 8-bit quantization requires a current Transformers release with MetalConfig."
-                ) from error
-            load_kwargs["quantization_config"] = MetalConfig(bits=8, group_size=64)
-        if self.settings.device == "auto":
-            load_kwargs["device_map"] = "auto"
-        else:
-            load_kwargs["device_map"] = self.settings.device
-        self.processor = AutoProcessor.from_pretrained(self.settings.model_id)
-        self.model = Gemma3nForConditionalGeneration.from_pretrained(self.settings.model_id, **load_kwargs).eval()
-        self.torch = torch
-        self.device = str(getattr(self.model, "device", self.settings.device))
+            with urlopen(request, timeout=min(10.0, self.settings.request_timeout_seconds)):
+                return None
+        except HTTPError as error:
+            raise RuntimeError(f"llama-server health check returned HTTP {error.code}.") from error
+        except URLError as error:
+            raise RuntimeError(f"Could not reach llama-server: {error.reason}") from error
 
     def generate(self, audio: WavAudio, request_id: str, language: str, context: dict[str, Any], tools: list[dict[str, Any]]) -> str:
-        if self.model is None or self.processor is None or self.torch is None:
-            raise RuntimeError("Gemma runner has not been loaded.")
-        waveform = self._decode_to_model_rate(audio)
-        prompt = self.processor.apply_chat_template(
-            [
-                {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+        payload = self.build_chat_request(audio.content, request_id, language, context, tools)
+        request = Request(
+            f"{self.settings.llama_server_url}/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.settings.request_timeout_seconds) as response:
+                result = json.loads(response.read())
+        except HTTPError as error:
+            raise RuntimeError(f"llama-server returned HTTP {error.code}.") from error
+        except URLError as error:
+            raise RuntimeError(f"Could not reach llama-server: {error.reason}") from error
+        try:
+            return result["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise RuntimeError("llama-server returned an unexpected chat response.") from error
+
+    def build_chat_request(
+        self,
+        audio: bytes,
+        request_id: str,
+        language: str,
+        context: dict[str, Any],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "model": self.settings.llama_server_model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "audio"},
-                        {"type": "text", "text": self._request_instruction(request_id, language, context, tools)},
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": base64.b64encode(audio).decode("ascii"),
+                                "format": "wav",
+                            },
+                        },
+                        {"type": "text", "text": request_instruction(request_id, language, context, tools)},
                     ],
                 },
             ],
-            add_generation_prompt=True,
-            tokenize=False,
-        )
-        inputs = self.processor(text=prompt, audio=[waveform], return_tensors="pt", padding=True).to(
-            self.model.device, dtype=self.model.dtype
-        )
-        input_length = inputs["input_ids"].shape[-1]
-        generation_options: dict[str, Any] = {"max_new_tokens": self.settings.max_generated_tokens}
-        if self.settings.temperature > 0:
-            generation_options.update(do_sample=True, temperature=self.settings.temperature)
-        else:
-            generation_options["do_sample"] = False
-        with self.torch.inference_mode():
-            generated = self.model.generate(**inputs, **generation_options)
-        return self.processor.decode(generated[0][input_length:], skip_special_tokens=True).strip()
-
-    def _decode_to_model_rate(self, audio: WavAudio) -> Any:
-        try:
-            import numpy as np
-            import soundfile as sf
-            from scipy.signal import resample_poly
-        except ImportError as error:
-            raise RuntimeError("Install the gemma extra before using MIND_RUNTIME=gemma.") from error
-        samples, sample_rate = sf.read(BytesIO(audio.content), dtype="float32", always_2d=True)
-        mono = samples.mean(axis=1)
-        target_rate = int(self.processor.feature_extractor.sampling_rate)
-        if sample_rate != target_rate:
-            divisor = math.gcd(sample_rate, target_rate)
-            mono = resample_poly(mono, target_rate // divisor, sample_rate // divisor).astype(np.float32)
-        return mono
-
-    @staticmethod
-    def _request_instruction(request_id: str, language: str, context: dict[str, Any], tools: list[dict[str, Any]]) -> str:
-        return "\n".join(
-            [
-                f"Request ID: {request_id}",
-                f"Language hint: {language}",
-                f"Robot context: {json.dumps(context, ensure_ascii=False)}",
-                f"Available tools: {json.dumps(tools, ensure_ascii=False)}",
-                "Listen to the attached audio and return the required JSON only.",
-            ]
-        )
+            "temperature": self.settings.temperature,
+            "max_tokens": self.settings.max_generated_tokens,
+            "response_format": {"type": "json_schema", "schema": VOICE_RESPONSE_JSON_SCHEMA},
+        }
 
 
 def build_runner(settings: Settings) -> InferenceRunner:
-    return StubRunner() if settings.runtime == "stub" else GemmaRunner(settings)
+    if settings.runtime == "stub":
+        return StubRunner()
+    return LlamaServerRunner(settings)

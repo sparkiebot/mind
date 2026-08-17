@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator
 from uuid import UUID
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
 
 from .audio import AudioValidationError, validate_wav
@@ -22,6 +22,7 @@ from .settings import Settings
 
 
 logger = logging.getLogger("sparkie_mind")
+TEST_PAGE_PATH = Path(__file__).with_name("static") / "test.html"
 
 
 class AdmissionGate:
@@ -125,7 +126,7 @@ def create_app(settings: Settings | None = None, runner: InferenceRunner | None 
         try:
             await asyncio.to_thread(state.runner.load)
             state.model_status = "ready"
-            logger.info("model_ready runtime=%s model=%s device=%s", configured_settings.runtime, configured_settings.model_id, state.runner.device)
+            logger.info("model_ready runtime=%s model=%s device=%s", configured_settings.runtime, configured_settings.selected_model, state.runner.device)
         except Exception as error:
             state.model_status = "failed"
             state.load_error = str(error)
@@ -140,10 +141,14 @@ def create_app(settings: Settings | None = None, runner: InferenceRunner | None 
         return HealthResponse(
             ready=state.ready,
             model_status=state.model_status,
-            model=configured_settings.model_id,
+            model=configured_settings.selected_model,
             device=state.runner.device,
             queue=state.gate.state(),
         )
+
+    @app.get("/test", include_in_schema=False)
+    async def test_page() -> FileResponse:
+        return FileResponse(TEST_PAGE_PATH, media_type="text/html")
 
     @app.post("/v1/voice-requests", response_model=VoiceResponse, responses={400: {"model": ErrorResponse}, 429: {"model": ErrorResponse}, 502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
     async def voice_request(

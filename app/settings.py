@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -25,11 +26,9 @@ def _decimal(name: str, default: float, minimum: float = 0.0) -> float:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    runtime: str = "gemma"
-    model_id: str = "google/gemma-3n-E2B-it"
-    device: str = "auto"
-    precision: str = "bfloat16"
-    quantization: str = "none"
+    runtime: str = "llama-server"
+    llama_server_url: str = "http://127.0.0.1:8080"
+    llama_server_model: str = "gemma4-e2b"
     bind_host: str = "127.0.0.1"
     port: int = 8088
     max_generated_tokens: int = 256
@@ -41,22 +40,25 @@ class Settings:
     debug_retain_audio: bool = False
     debug_audio_dir: Path = Path("debug-audio")
 
+    @property
+    def selected_model(self) -> str:
+        return self.llama_server_model
+
     @classmethod
     def from_environment(cls) -> "Settings":
         load_dotenv()
         defaults = cls()
         runtime = os.getenv("MIND_RUNTIME", defaults.runtime).lower()
-        if runtime not in {"gemma", "stub"}:
-            raise ValueError("MIND_RUNTIME must be either 'gemma' or 'stub'")
-        quantization = os.getenv("MIND_QUANTIZATION", defaults.quantization).lower()
-        if quantization not in {"none", "metal-8bit"}:
-            raise ValueError("MIND_QUANTIZATION must be either 'none' or 'metal-8bit'")
+        if runtime not in {"llama-server", "stub"}:
+            raise ValueError("MIND_RUNTIME must be 'llama-server' or 'stub'")
+        llama_server_url = os.getenv("MIND_LLAMA_SERVER_URL", defaults.llama_server_url).rstrip("/")
+        parsed_llama_server_url = urlparse(llama_server_url)
+        if parsed_llama_server_url.scheme not in {"http", "https"} or not parsed_llama_server_url.netloc:
+            raise ValueError("MIND_LLAMA_SERVER_URL must be an absolute HTTP(S) URL.")
         return cls(
             runtime=runtime,
-            model_id=os.getenv("MIND_MODEL_ID", defaults.model_id),
-            device=os.getenv("MIND_DEVICE", defaults.device),
-            precision=os.getenv("MIND_PRECISION", defaults.precision),
-            quantization=quantization,
+            llama_server_url=llama_server_url,
+            llama_server_model=os.getenv("MIND_LLAMA_SERVER_MODEL", defaults.llama_server_model),
             bind_host=os.getenv("MIND_BIND_HOST", defaults.bind_host),
             port=_integer("MIND_PORT", defaults.port, 1),
             max_generated_tokens=_integer("MIND_MAX_GENERATED_TOKENS", defaults.max_generated_tokens, 1),

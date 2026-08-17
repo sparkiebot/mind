@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from io import BytesIO
 import json
 from uuid import uuid4
@@ -8,7 +9,7 @@ import wave
 from fastapi.testclient import TestClient
 
 from app.main import AdmissionGate, create_app
-from app.runtime import InferenceRunner, StubRunner
+from app.runtime import InferenceRunner, LlamaServerRunner, StubRunner
 from app.settings import Settings
 
 
@@ -48,10 +49,19 @@ def test_health_reports_stub_readiness() -> None:
     assert response.json() == {
         "ready": True,
         "model_status": "ready",
-        "model": "google/gemma-3n-E2B-it",
+        "model": "gemma4-e2b",
         "device": "stub",
         "queue": {"capacity": 1, "in_flight": 0, "waiting": 0},
     }
+
+
+def test_browser_test_page_is_served() -> None:
+    with client() as test_client:
+        response = test_client.get("/test")
+    assert response.status_code == 200
+    assert "Sparkie Mind audio test" in response.text
+    assert "getUserMedia" in response.text
+    assert "/v1/voice-requests" in response.text
 
 
 def test_stub_accepts_valid_wav_without_robot() -> None:
@@ -121,3 +131,25 @@ def test_admission_gate_has_no_unbounded_backlog() -> None:
     import asyncio
 
     asyncio.run(check())
+
+
+def test_llama_runtime_builds_a_direct_response_request() -> None:
+    audio = wav_bytes()
+    settings = Settings(runtime="llama-server", llama_server_model="gemma4-e2b")
+    payload = LlamaServerRunner(settings).build_chat_request(
+        audio,
+        "request-123",
+        "it",
+        {"battery_percent": 80},
+        [{"name": "navigate", "description": "Move Sparkie."}],
+    )
+
+    assert settings.selected_model == "gemma4-e2b"
+    assert payload["model"] == "gemma4-e2b"
+    assert "do not transcribe" in payload["messages"][0]["content"]
+    assert payload["response_format"]["type"] == "json_schema"
+    assert payload["response_format"]["schema"]["additionalProperties"] is False
+    content = payload["messages"][1]["content"]
+    assert base64.b64decode(content[0]["input_audio"]["data"]) == audio
+    assert "Request ID: request-123" in content[1]["text"]
+    assert "navigate" in content[1]["text"]

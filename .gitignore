@@ -14,8 +14,10 @@ __pycache__/
 
 # Runtime data, including optional retained debug recordings
 data/
+models/
 debug-audio/
 logs/
+tmp-poc/
 
 # Local IDE and OS files
 .DS_Store

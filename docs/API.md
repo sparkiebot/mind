@@ -43,6 +43,11 @@ Errors use:
 The server independently validates model output and tool proposals before
 returning a response.
 
+The active runtime may be `llama-server` or `stub`. With `llama-server`, this
+API remains the only robot-facing endpoint: it performs the same validation and
+admission control, then sends a native-audio request to a separately managed
+loopback llama.cpp server.
+
 Common errors are `invalid_audio` (400), `invalid_request` (413/422), `busy`
 (429), `service_not_ready` (503), `inference_timeout` (504), and
 `invalid_model_output` (502). Every application error includes the supplied

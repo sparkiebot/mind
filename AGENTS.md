@@ -8,9 +8,9 @@ expected to become its own GitHub repository.
 
 ## Architecture Boundaries
 
-- This service receives a completed robot WAV and sends it directly to
-  `google/gemma-3n-E2B-it` using a runtime that supports its native audio
-  input. Do not add Whisper or another mandatory STT stage.
+- This service receives a completed robot WAV and sends it directly to the
+  local Gemma 4 E2B runtime served by `llama-server`. Do not add Whisper or
+  another mandatory STT stage.
 - The robot owns microphone processing, wake word, VAD, recording, LEDs,
   edge-playback, localization, navigation execution, motion safety, lightweight
   vision, and physical tools.
