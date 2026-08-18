@@ -7,24 +7,21 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import json
 import logging
-from pathlib import Path
+from time import perf_counter
 from typing import Any, AsyncIterator
 from uuid import UUID
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from .audio import AudioValidationError, validate_wav
 from .runtime import InferenceRunner, build_runner
-from .schemas import ErrorResponse, HealthResponse, VoiceResponse
+from .schemas import ErrorResponse, HealthResponse, TextRequest, VoiceResponse
 from .settings import Settings
 
 
 logger = logging.getLogger("sparkie_mind")
-TEST_PAGE_PATH = Path(__file__).with_name("static") / "test.html"
-
-
 class AdmissionGate:
     """Bound requests before they can wait for the single inference worker."""
 
@@ -97,11 +94,13 @@ def _parse_model_response(raw: str, request_id: UUID, available_tools: list[dict
     if candidate.startswith("```") and candidate.endswith("```"):
         candidate = candidate.split("\n", 1)[1].rsplit("\n", 1)[0]
     try:
-        response = VoiceResponse.model_validate_json(candidate)
-    except ValidationError as error:
+        payload = json.loads(candidate)
+        if not isinstance(payload, dict):
+            raise ValueError("Model output must be a JSON object.")
+        payload["request_id"] = str(request_id)
+        response = VoiceResponse.model_validate(payload)
+    except (json.JSONDecodeError, ValidationError) as error:
         raise ValueError("The model did not return the required response schema.") from error
-    if response.request_id != request_id:
-        raise ValueError("The model response request_id does not match the request.")
     permitted_names = {tool.get("name") for tool in available_tools if isinstance(tool.get("name"), str)}
     if any(tool.name not in permitted_names for tool in response.tool_calls):
         raise ValueError("The model requested a tool that was not supplied by the robot.")
@@ -146,10 +145,6 @@ def create_app(settings: Settings | None = None, runner: InferenceRunner | None 
             queue=state.gate.state(),
         )
 
-    @app.get("/test", include_in_schema=False)
-    async def test_page() -> FileResponse:
-        return FileResponse(TEST_PAGE_PATH, media_type="text/html")
-
     @app.post("/v1/voice-requests", response_model=VoiceResponse, responses={400: {"model": ErrorResponse}, 429: {"model": ErrorResponse}, 502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
     async def voice_request(
         request: Request,
@@ -179,23 +174,87 @@ def create_app(settings: Settings | None = None, runner: InferenceRunner | None 
             return _error(429, "busy", "The inference queue is full. Please retry later.", request_id)  # type: ignore[return-value]
         try:
             _retain_debug_audio(configured_settings, request_id, raw_audio)
+            inference_started = perf_counter()
             raw_response = await state.gate.run(
                 asyncio.wait_for(
                     asyncio.to_thread(state.runner.generate, validated_audio, str(request_id), language, parsed_context, parsed_tools),
                     timeout=configured_settings.request_timeout_seconds,
                 )
             )
+            inference_ms = (perf_counter() - inference_started) * 1000
             response = _parse_model_response(raw_response, request_id, parsed_tools)
-            logger.info("voice_request_completed request_id=%s robot_id=%s duration_seconds=%.3f", request_id, robot_id, validated_audio.duration_seconds)
+            logger.info(
+                "voice_request_completed request_id=%s robot_id=%s duration_seconds=%.3f inference_ms=%.1f",
+                request_id,
+                robot_id,
+                validated_audio.duration_seconds,
+                inference_ms,
+            )
             return response
         except TimeoutError:
             logger.warning("voice_request_timed_out request_id=%s robot_id=%s", request_id, robot_id)
             return _error(504, "inference_timeout", "Inference exceeded the configured request timeout.", request_id)  # type: ignore[return-value]
         except ValueError as error:
-            logger.warning("voice_request_invalid_model_output request_id=%s robot_id=%s", request_id, robot_id)
+            logger.warning(
+                "voice_request_invalid_model_output request_id=%s robot_id=%s reason=%s",
+                request_id,
+                robot_id,
+                error,
+            )
             return _error(502, "invalid_model_output", str(error), request_id)  # type: ignore[return-value]
         except Exception:
             logger.exception("voice_request_failed request_id=%s robot_id=%s", request_id, robot_id)
+            return _error(502, "inference_failed", "The inference request failed.", request_id)  # type: ignore[return-value]
+        finally:
+            state.gate.release()
+
+    @app.post("/v1/text-requests", response_model=VoiceResponse, responses={400: {"model": ErrorResponse}, 413: {"model": ErrorResponse}, 429: {"model": ErrorResponse}, 502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+    async def text_request(payload: TextRequest) -> VoiceResponse:
+        request_id = payload.request_id
+        if not state.ready:
+            return _error(503, "service_not_ready", "The inference service is not ready.", request_id)  # type: ignore[return-value]
+        if len(payload.text) > configured_settings.max_text_length:
+            return _error(413, "invalid_request", "The text exceeds the maximum length.", request_id)  # type: ignore[return-value]
+        if not await state.gate.try_acquire():
+            return _error(429, "busy", "The inference queue is full. Please retry later.", request_id)  # type: ignore[return-value]
+        try:
+            inference_started = perf_counter()
+            raw_response = await state.gate.run(
+                asyncio.wait_for(
+                    asyncio.to_thread(
+                        state.runner.generate_text,
+                        payload.text,
+                        str(request_id),
+                        payload.language,
+                        payload.context,
+                        payload.available_tools,
+                    ),
+                    timeout=configured_settings.request_timeout_seconds,
+                )
+            )
+            inference_ms = (perf_counter() - inference_started) * 1000
+            response = _parse_model_response(raw_response, request_id, payload.available_tools)
+            logger.info(
+                "text_request_completed request_id=%s robot_id=%s text_length=%d inference_ms=%.1f",
+                request_id,
+                payload.robot_id,
+                len(payload.text),
+                inference_ms,
+            )
+            return response
+        except TimeoutError:
+            logger.warning("text_request_timed_out request_id=%s robot_id=%s", request_id, payload.robot_id)
+            return _error(504, "inference_timeout", "Inference exceeded the configured request timeout.", request_id)  # type: ignore[return-value]
+        except ValueError as error:
+            logger.warning(
+                "text_request_invalid_model_output request_id=%s robot_id=%s reason=%s",
+                request_id,
+                payload.robot_id,
+                error,
+            )
+            return _error(502, "invalid_model_output", str(error), request_id)  # type: ignore[return-value]
+        except Exception:
+            logger.exception("text_request_failed request_id=%s robot_id=%s", request_id, payload.robot_id)
             return _error(502, "inference_failed", "The inference request failed.", request_id)  # type: ignore[return-value]
         finally:
             state.gate.release()

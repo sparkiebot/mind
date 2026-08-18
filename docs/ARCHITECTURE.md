@@ -11,6 +11,10 @@ Robot capture completion
   -> robot local edge-playback
 ```
 
+Text clients can instead send `POST /v1/text-requests`. Both endpoints share
+the same bounded inference worker, response validation, and tool-call safety
+boundary.
+
 The native-audio runtime is a separately managed local `llama-server` process
 using Gemma 4 E2B GGUF plus its matching multimodal projector. The model
 receives audio directly through its audio pathway; no separate ASR stage is

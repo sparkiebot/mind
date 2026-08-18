@@ -13,6 +13,7 @@ llama_model="${MIND_LLAMA_MODEL_PATH:-models/llama.cpp/gemma4-e2b/google-gemma-4
 llama_mmproj="${MIND_LLAMA_MMPROJ_PATH:-models/llama.cpp/gemma4-e2b/mmproj-BF16.gguf}"
 llama_gpu_layers="${MIND_LLAMA_GPU_LAYERS:-99}"
 llama_context_size="${MIND_LLAMA_CONTEXT_SIZE:-4096}"
+llama_parallel="${MIND_LLAMA_PARALLEL:-1}"
 python_binary="${MIND_PYTHON_BINARY:-.venv/bin/python}"
 log_dir="${MIND_STACK_LOG_DIR:-logs}"
 llama_log="$log_dir/llama-server.log"
@@ -62,7 +63,7 @@ echo "Starting llama-server; logs: $llama_log"
     --reasoning off \
     --gpu-layers "$llama_gpu_layers" \
     --ctx-size "$llama_context_size" \
-    --no-warmup \
+    --parallel "$llama_parallel" \
     --host "$llama_host" \
     --port "$llama_port" >"$llama_log" 2>&1 &
 llama_pid=$!
@@ -87,6 +88,7 @@ fi
 export MIND_RUNTIME=llama-server
 export MIND_LLAMA_SERVER_URL="$llama_url"
 export MIND_LLAMA_SERVER_MODEL="${MIND_LLAMA_SERVER_MODEL:-gemma4-e2b}"
+export MIND_MAX_GENERATED_TOKENS="${MIND_MAX_GENERATED_TOKENS:-256}"
 
 echo "Starting Sparkie Mind with llama-server at $llama_url"
 echo "Press Ctrl+C to stop both services."

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -48,6 +49,25 @@ class ErrorDetail(BaseModel):
 class ErrorResponse(BaseModel):
     request_id: UUID | None = None
     error: ErrorDetail
+
+
+class TextRequest(BaseModel):
+    """A robot text turn with the same metadata as a voice request."""
+
+    request_id: UUID
+    robot_id: str = Field(min_length=1, max_length=128)
+    language: str = Field(default="it", min_length=2, max_length=16)
+    timestamp: datetime
+    text: str = Field(min_length=1)
+    context: dict[str, Any] = Field(default_factory=dict)
+    available_tools: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("text")
+    @classmethod
+    def text_is_not_whitespace(cls, text: str) -> str:
+        if not text.strip():
+            raise ValueError("text must not be blank")
+        return text
 
 
 class HealthResponse(BaseModel):

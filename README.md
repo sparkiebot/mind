@@ -1,9 +1,9 @@
 # Sparkie Mind
 
-Sparkie Mind is Sparkie's private-LAN voice-inference service. It accepts a
-completed WAV, sends it as native audio to local Gemma 4 E2B through llama.cpp,
-and returns a validated Italian response or tool proposal. It has no separate
-STT/Whisper stage.
+Sparkie Mind is Sparkie's private-LAN inference service. It accepts a completed
+WAV or a text request, sends it to local Gemma 4 E2B through llama.cpp, and
+returns a validated Italian response or tool proposal. Audio requests have no
+separate STT/Whisper stage.
 
 ## Quick start
 
@@ -16,12 +16,6 @@ scripts/run-llama-mind.sh
 
 The script starts `llama-server` with the configured GGUF and multimodal
 projector, waits for it, then starts Sparkie Mind. Press `Ctrl+C` to stop both.
-
-## Browser test
-
-Open [http://127.0.0.1:8088/test](http://127.0.0.1:8088/test) to record a WAV,
-listen back, and send it through the normal API. Use loopback during development;
-browsers require HTTPS for microphone access on non-loopback origins.
 
 ## Configuration
 

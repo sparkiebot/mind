@@ -24,16 +24,15 @@ present in the supplied tool list and use response_text only to briefly acknowle
 names, arguments, observations, or execution results. Ask a short clarification question when the request is
 ambiguous, unsafe, or cannot be fulfilled with the supplied tools.
 
-Return only valid JSON matching this schema: {request_id: string UUID, type: 'speech' or 'tool_call', response_text:
-string, tool_calls: [{name: string, arguments: object}]}. A speech response must have an empty tool_calls list. A
-tool_call response must contain at least one permitted tool call."""
+Return only valid JSON matching this schema: {type: 'speech' or 'tool_call', response_text: string, tool_calls:
+[{name: string, arguments: object}]}. A speech response must have an empty tool_calls list. A tool_call response must
+contain at least one permitted tool call."""
 
 VOICE_RESPONSE_JSON_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["request_id", "type", "response_text", "tool_calls"],
+    "required": ["type", "response_text", "tool_calls"],
     "properties": {
-        "request_id": {"type": "string"},
         "type": {"type": "string", "enum": ["speech", "tool_call"]},
         "response_text": {"type": "string"},
         "tool_calls": {
@@ -63,6 +62,10 @@ class InferenceRunner(ABC):
     def generate(self, audio: WavAudio, request_id: str, language: str, context: dict[str, Any], tools: list[dict[str, Any]]) -> str:
         """Return the model's raw structured response."""
 
+    @abstractmethod
+    def generate_text(self, text: str, request_id: str, language: str, context: dict[str, Any], tools: list[dict[str, Any]]) -> str:
+        """Return the model's raw structured response for a text request."""
+
 
 class StubRunner(InferenceRunner):
     """Deterministic test backend that never inspects or retains request audio."""
@@ -73,6 +76,13 @@ class StubRunner(InferenceRunner):
         return None
 
     def generate(self, audio: WavAudio, request_id: str, language: str, context: dict[str, Any], tools: list[dict[str, Any]]) -> str:
+        return self._response(request_id)
+
+    def generate_text(self, text: str, request_id: str, language: str, context: dict[str, Any], tools: list[dict[str, Any]]) -> str:
+        return self._response(request_id)
+
+    @staticmethod
+    def _response(request_id: str) -> str:
         return json.dumps(
             {
                 "request_id": request_id,
@@ -83,14 +93,13 @@ class StubRunner(InferenceRunner):
         )
 
 
-def request_instruction(request_id: str, language: str, context: dict[str, Any], tools: list[dict[str, Any]]) -> str:
+def request_instruction(language: str, context: dict[str, Any], tools: list[dict[str, Any]], input_kind: str) -> str:
     return "\n".join(
         [
-            f"Request ID: {request_id}",
             f"Language hint: {language}",
             f"Robot context: {json.dumps(context, ensure_ascii=False)}",
             f"Available tools: {json.dumps(tools, ensure_ascii=False)}",
-            "Use the attached audio as the user's request and return the required JSON only.",
+            f"Use the supplied {input_kind} as the user's request and return the required JSON only.",
         ]
     )
 
@@ -114,7 +123,14 @@ class LlamaServerRunner(InferenceRunner):
             raise RuntimeError(f"Could not reach llama-server: {error.reason}") from error
 
     def generate(self, audio: WavAudio, request_id: str, language: str, context: dict[str, Any], tools: list[dict[str, Any]]) -> str:
-        payload = self.build_chat_request(audio.content, request_id, language, context, tools)
+        payload = self.build_audio_chat_request(audio.content, language, context, tools)
+        return self._send_chat_request(payload)
+
+    def generate_text(self, text: str, request_id: str, language: str, context: dict[str, Any], tools: list[dict[str, Any]]) -> str:
+        payload = self.build_text_chat_request(text, language, context, tools)
+        return self._send_chat_request(payload)
+
+    def _send_chat_request(self, payload: dict[str, Any]) -> str:
         request = Request(
             f"{self.settings.llama_server_url}/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -133,10 +149,9 @@ class LlamaServerRunner(InferenceRunner):
         except (KeyError, IndexError, TypeError) as error:
             raise RuntimeError("llama-server returned an unexpected chat response.") from error
 
-    def build_chat_request(
+    def build_audio_chat_request(
         self,
         audio: bytes,
-        request_id: str,
         language: str,
         context: dict[str, Any],
         tools: list[dict[str, Any]],
@@ -155,8 +170,29 @@ class LlamaServerRunner(InferenceRunner):
                                 "format": "wav",
                             },
                         },
-                        {"type": "text", "text": request_instruction(request_id, language, context, tools)},
+                        {"type": "text", "text": request_instruction(language, context, tools, "audio")},
                     ],
+                },
+            ],
+            "temperature": self.settings.temperature,
+            "max_tokens": self.settings.max_generated_tokens,
+            "response_format": {"type": "json_schema", "schema": VOICE_RESPONSE_JSON_SCHEMA},
+        }
+
+    def build_text_chat_request(
+        self,
+        text: str,
+        language: str,
+        context: dict[str, Any],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "model": self.settings.llama_server_model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"User request: {text}\n\n{request_instruction(language, context, tools, 'text')}",
                 },
             ],
             "temperature": self.settings.temperature,

@@ -17,7 +17,29 @@ Accepts multipart form data:
 - `context`: optional JSON context.
 - `available_tools`: optional JSON list of permitted tools.
 
-Success response:
+## `POST /v1/text-requests`
+
+Accepts a JSON object with the same request metadata as the voice endpoint,
+but replaces `audio` with `text`:
+
+```json
+{
+  "request_id": "uuid",
+  "robot_id": "sparkie-01",
+  "language": "it",
+  "timestamp": "2026-08-18T12:00:00Z",
+  "text": "Portami in cucina",
+  "context": {},
+  "available_tools": []
+}
+```
+
+`text` must be non-empty and no longer than `MIND_MAX_TEXT_LENGTH` (default:
+4,000 characters). The text is not retained or logged by default. The endpoint
+uses the same bounded inference worker and returns the same success and error
+schemas as `POST /v1/voice-requests`.
+
+Both request endpoints return this success response:
 
 ```json
 {

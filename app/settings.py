@@ -36,6 +36,7 @@ class Settings:
     request_timeout_seconds: float = 45.0
     max_audio_duration_seconds: float = 30.0
     max_upload_bytes: int = 5 * 1024 * 1024
+    max_text_length: int = 4_000
     queue_length: int = 0
     debug_retain_audio: bool = False
     debug_audio_dir: Path = Path("debug-audio")
@@ -66,6 +67,7 @@ class Settings:
             request_timeout_seconds=_decimal("MIND_REQUEST_TIMEOUT_SECONDS", defaults.request_timeout_seconds, 0.1),
             max_audio_duration_seconds=_decimal("MIND_MAX_AUDIO_DURATION_SECONDS", defaults.max_audio_duration_seconds, 0.1),
             max_upload_bytes=_integer("MIND_MAX_UPLOAD_BYTES", defaults.max_upload_bytes, 1),
+            max_text_length=_integer("MIND_MAX_TEXT_LENGTH", defaults.max_text_length, 1),
             queue_length=_integer("MIND_QUEUE_LENGTH", defaults.queue_length),
             debug_retain_audio=os.getenv("MIND_DEBUG_RETAIN_AUDIO", "false").lower() in {"1", "true", "yes"},
             debug_audio_dir=Path(os.getenv("MIND_DEBUG_AUDIO_DIR", "debug-audio")),

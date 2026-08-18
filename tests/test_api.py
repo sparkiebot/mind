@@ -3,11 +3,13 @@ from __future__ import annotations
 import base64
 from io import BytesIO
 import json
+import logging
 from uuid import uuid4
 import wave
 
 from fastapi.testclient import TestClient
 
+from app.__main__ import HealthRequestFilter
 from app.main import AdmissionGate, create_app
 from app.runtime import InferenceRunner, LlamaServerRunner, StubRunner
 from app.settings import Settings
@@ -42,6 +44,18 @@ def request_parts(audio: bytes, content_type: str = "audio/wav") -> tuple[dict[s
     )
 
 
+def text_request_payload(text: str = "Portami in cucina") -> dict[str, object]:
+    return {
+        "request_id": str(uuid4()),
+        "robot_id": "sparkie-test",
+        "language": "it",
+        "timestamp": "2026-08-17T12:00:00Z",
+        "text": text,
+        "context": {"battery_percent": 80},
+        "available_tools": [],
+    }
+
+
 def test_health_reports_stub_readiness() -> None:
     with client() as test_client:
         response = test_client.get("/health")
@@ -55,13 +69,17 @@ def test_health_reports_stub_readiness() -> None:
     }
 
 
-def test_browser_test_page_is_served() -> None:
-    with client() as test_client:
-        response = test_client.get("/test")
-    assert response.status_code == 200
-    assert "Sparkie Mind audio test" in response.text
-    assert "getUserMedia" in response.text
-    assert "/v1/voice-requests" in response.text
+def test_health_access_log_filter_suppresses_only_health_requests() -> None:
+    log_filter = HealthRequestFilter()
+    health_record = logging.makeLogRecord(
+        {"name": "uvicorn.access", "msg": '127.0.0.1 - "GET /health HTTP/1.1" 200'}
+    )
+    voice_record = logging.makeLogRecord(
+        {"name": "uvicorn.access", "msg": '127.0.0.1 - "POST /v1/voice-requests HTTP/1.1" 200'}
+    )
+
+    assert not log_filter.filter(health_record)
+    assert log_filter.filter(voice_record)
 
 
 def test_stub_accepts_valid_wav_without_robot() -> None:
@@ -74,6 +92,32 @@ def test_stub_accepts_valid_wav_without_robot() -> None:
     assert payload["type"] == "speech"
     assert payload["response_text"] == "Certo, come posso aiutarti?"
     assert payload["tool_calls"] == []
+
+
+def test_stub_accepts_text_request_without_robot() -> None:
+    payload = text_request_payload()
+    with client() as test_client:
+        response = test_client.post("/v1/text-requests", json=payload)
+    assert response.status_code == 200
+    assert response.json()["request_id"] == payload["request_id"]
+    assert response.json()["type"] == "speech"
+
+
+def test_text_request_rejects_over_limit_without_logging_content() -> None:
+    payload = text_request_payload("x" * 11)
+    settings = Settings(runtime="stub", max_text_length=10)
+    with TestClient(create_app(settings=settings, runner=StubRunner())) as test_client:
+        response = test_client.post("/v1/text-requests", json=payload)
+    assert response.status_code == 413
+    assert response.json()["request_id"] == payload["request_id"]
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_text_request_rejects_blank_text() -> None:
+    payload = text_request_payload("   ")
+    with client() as test_client:
+        response = test_client.post("/v1/text-requests", json=payload)
+    assert response.status_code == 422
 
 
 def test_rejects_non_wav_and_preserves_request_id() -> None:
@@ -100,6 +144,13 @@ class UnauthorizedToolRunner(InferenceRunner):
         return None
 
     def generate(self, audio, request_id, language, context, tools) -> str:
+        return self._response(request_id)
+
+    def generate_text(self, text, request_id, language, context, tools) -> str:
+        return self._response(request_id)
+
+    @staticmethod
+    def _response(request_id: str) -> str:
         return json.dumps(
             {
                 "request_id": request_id,
@@ -136,9 +187,8 @@ def test_admission_gate_has_no_unbounded_backlog() -> None:
 def test_llama_runtime_builds_a_direct_response_request() -> None:
     audio = wav_bytes()
     settings = Settings(runtime="llama-server", llama_server_model="gemma4-e2b")
-    payload = LlamaServerRunner(settings).build_chat_request(
+    payload = LlamaServerRunner(settings).build_audio_chat_request(
         audio,
-        "request-123",
         "it",
         {"battery_percent": 80},
         [{"name": "navigate", "description": "Move Sparkie."}],
@@ -147,9 +197,19 @@ def test_llama_runtime_builds_a_direct_response_request() -> None:
     assert settings.selected_model == "gemma4-e2b"
     assert payload["model"] == "gemma4-e2b"
     assert "do not transcribe" in payload["messages"][0]["content"]
+    assert "request_id" not in payload["response_format"]["schema"]["properties"]
     assert payload["response_format"]["type"] == "json_schema"
     assert payload["response_format"]["schema"]["additionalProperties"] is False
+    assert payload["max_tokens"] == settings.max_generated_tokens
     content = payload["messages"][1]["content"]
     assert base64.b64decode(content[0]["input_audio"]["data"]) == audio
-    assert "Request ID: request-123" in content[1]["text"]
+    assert "Request ID" not in content[1]["text"]
     assert "navigate" in content[1]["text"]
+
+
+def test_llama_runtime_builds_text_request() -> None:
+    settings = Settings(runtime="llama-server", llama_server_model="gemma4-e2b")
+    payload = LlamaServerRunner(settings).build_text_chat_request("Portami in cucina", "it", {}, [])
+
+    assert payload["messages"][1]["content"].startswith("User request: Portami in cucina")
+    assert "supplied text" in payload["messages"][1]["content"]
